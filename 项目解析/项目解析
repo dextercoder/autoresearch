@@ -1,0 +1,213 @@
+如何运行项目
+## Running the agent
+
+Simply spin up your Claude/Codex or whatever you want in this repo (and disable all permissions), then you can prompt something like:
+
+```
+Hi have a look at program.md and let's kick off a new experiment! let's do the setup first.
+```
+
+The `program.md` file is essentially a super lightweight "skill".
+
+## Project structure
+
+```
+prepare.py      — constants, data prep + runtime utilities (do not modify)
+train.py        — model, optimizer, training loop (agent modifies this)
+program.md      — agent instructions
+pyproject.toml  — dependencies
+```
+
+
+
+
+
+
+
+# autoresearch 项目文件解读
+
+## 项目概述
+
+autoresearch 是一个让 LLM 自主进行研究的实验项目，核心思想是让 AI 代理在一个小型 LLM 训练设置中自主实验，修改代码、训练 5 分钟、检查结果、保留或丢弃，重复这个过程。用户可以在睡觉时让 AI 代理运行实验，醒来后查看结果。
+
+## 文件详解
+
+### 1. README.md
+
+**核心内容**：
+- 项目介绍：描述了 autoresearch 的目标和工作原理
+- 项目结构：
+  - `prepare.py`：固定常量、数据准备和运行时工具（不可修改）
+  - `train.py`：模型、优化器和训练循环（AI 代理修改的文件）
+  - `program.md`：代理指令
+- 设计选择：
+  - 单文件修改：只修改 `train.py`
+  - 固定时间预算：训练总是运行 5 分钟
+  - 自包含：无外部依赖
+- 平台支持：需要 NVIDIA GPU
+
+**技术要点**：
+- 训练运行固定 5 分钟时间预算
+- 评估指标是 val_bpb（验证集每字节比特数），越低越好
+- 项目是 nanochat 的简化单 GPU 实现
+
+### 2. program.md
+
+**核心内容**：
+- 实验设置步骤：
+  1. 商定运行标签（基于日期）
+  2. 创建分支
+  3. 阅读范围内的文件
+  4. 验证数据存在
+  5. 初始化 results.tsv
+  6. 确认并开始
+- 实验过程：
+  - 每个实验在单个 GPU 上运行
+  - 训练脚本运行固定 5 分钟
+  - 可以修改 `train.py` 的任何内容
+  - 不能修改 `prepare.py`、安装新包或修改评估方法
+- 输出格式：训练结束后会打印摘要
+- 记录结果：将结果记录到 results.tsv
+- 实验循环：不断尝试新的想法，保留改进的结果，丢弃无效的尝试
+
+**技术要点**：
+- 严格的实验流程控制
+- 结果记录格式规范
+- 自动分支管理策略
+
+### 3. prepare.py
+
+**核心内容**：
+- 一次性数据准备：下载数据分片和训练 BPE 分词器
+- 常量定义：
+  - MAX_SEQ_LEN = 2048（上下文长度）
+  - TIME_BUDGET = 300（训练时间预算，5分钟）
+  - EVAL_TOKENS = 40 * 524288（验证用的 token 数量）
+- 配置：
+  - 缓存目录：~/.cache/autoresearch/
+  - 数据目录和分词器目录
+  - 基础 URL 和数据分片信息
+- 数据下载：
+  - 下载单个分片的函数
+  - 并行下载数据的函数
+- 分词器训练：
+  - 列出 parquet 文件
+  - 文本迭代器
+  - 训练 BPE 分词器的函数
+- 运行时工具：
+  - Tokenizer 类：简单的分词器包装器
+  - get_token_bytes 函数：获取 token 字节数
+  - make_dataloader 函数：创建数据加载器
+- 评估函数：evaluate_bpb（固定，不可修改）
+
+**技术要点**：
+- 使用 rustbpe 训练 BPE 分词器
+- 实现了高效的数据加载和打包
+- 评估指标 bits per byte (BPB) 是词汇大小无关的评估指标
+
+### 4. train.py
+
+**核心内容**：
+- 模型架构：
+  - GPTConfig 类：模型配置
+  - 归一化函数：F.rms_norm
+  - 旋转位置编码：apply_rotary_emb
+  - CausalSelfAttention 类：因果自注意力
+  - MLP 类：多层感知机
+  - Block 类：Transformer 块
+  - GPT 类：完整的 GPT 模型
+- 优化器：
+  - MuonAdamW 类：结合了 Muon（用于 2D 矩阵参数）和 AdamW（用于其他参数）
+- 超参数：
+  - 模型架构：ASPECT_RATIO, HEAD_DIM, WINDOW_PATTERN
+  - 优化：TOTAL_BATCH_SIZE, EMBEDDING_LR, UNEMBEDDING_LR, MATRIX_LR, SCALAR_LR, WEIGHT_DECAY, ADAM_BETAS, WARMUP_RATIO, WARMDOWN_RATIO, FINAL_LR_FRAC
+  - 模型大小：DEPTH, DEVICE_BATCH_SIZE
+- 训练循环：
+  - 初始化：分词器、模型、优化器、数据加载器
+  - 学习率调度
+  - 动量调度
+  - 权重衰减调度
+  - 训练循环
+  - 最终评估
+  - 打印摘要
+
+**技术要点**：
+- 使用 Flash Attention 3 进行高效注意力计算
+- 实现了 Value Embedding（Value 残差）
+- 采用了多种优化技术：梯度累积、混合精度训练、学习率调度
+- 使用 torch.compile 加速模型
+- 详细的性能指标计算（MFU、token/sec 等）
+
+### 5. analysis.ipynb
+
+**核心内容**：
+- 分析 autoresearch 实验结果
+- 加载 results.tsv
+- 统计实验结果：总实验数、各种状态的实验数
+- 显示保留的实验
+- 绘制 val_bpb 随时间的变化
+- 计算摘要统计信息：基线 val_bpb、最佳 val_bpb、总改进
+- 按改进排序显示保留的实验
+
+**技术要点**：
+- 使用 pandas 进行数据处理
+- 使用 matplotlib 进行可视化
+- 计算累积改进和排名
+
+## 技术亮点
+
+1. **自主研究循环**：实现了一个完整的自主研究循环，AI 代理可以不断尝试新的想法并评估结果。
+
+2. **高效训练**：
+   - 使用 Flash Attention 3 加速注意力计算
+   - 混合精度训练（bfloat16）
+   - 梯度累积
+   - torch.compile 模型加速
+
+3. **优化器创新**：
+   - MuonAdamW 结合了 Muon（用于 2D 矩阵参数）和 AdamW（用于其他参数）
+   - 实现了 Polar express 正交化和 NorMuon 方差减少
+
+4. **模型架构**：
+   - 实现了 Value Embedding（Value 残差）
+   - 支持滑动窗口注意力模式
+   - 每层可学习的残差标量
+
+5. **评估指标**：
+   - 使用 bits per byte (BPB) 作为评估指标，这是一个词汇大小无关的指标，使得不同架构的比较更加公平
+
+6. **完整的实验管理**：
+   - 严格的实验流程控制
+   - 详细的结果记录
+   - 自动分支管理策略
+
+7. **性能监控**：
+   - 详细的性能指标计算（MFU、token/sec 等）
+   - 内存使用监控
+
+## 项目工作流程
+
+1. **设置阶段**：
+   - 创建基于日期的分支
+   - 读取关键文件
+   - 验证数据存在
+   - 初始化 results.tsv
+
+2. **实验阶段**：
+   - 修改 train.py
+   - git commit
+   - 运行训练（5分钟）
+   - 读取结果
+   - 记录到 results.tsv
+   - 根据结果决定是否保留修改
+
+3. **分析阶段**：
+   - 使用 analysis.ipynb 分析实验结果
+   - 查看改进趋势
+   - 识别最佳实验
+
+## 总结
+
+autoresearch 是一个创新的项目，展示了如何让 AI 代理自主进行 LLM 研究。通过固定时间预算、严格的实验流程和详细的结果记录，它创建了一个可重复、可比较的实验环境。项目的技术实现也很先进，包括使用 Flash Attention 3、混合精度训练、创新的优化器设计等。
+
+这个项目不仅是一个技术演示，也是一个实用的工具，可以在用户睡觉时自动运行实验，探索模型架构和超参数的最佳组合。
